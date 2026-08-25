@@ -1,415 +1,1080 @@
 <!doctype html>
 <html lang="th">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI TikTok Shop Autopilot</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<style>
-body{
-  font-family:Arial,sans-serif;
-  background:#f5f6f8;
-  margin:0;
-  color:#111
-}
+  <title>AI TikTok Shop Autopilot</title>
 
-header{
-  background:#111;
-  color:#fff;
-  padding:22px
-}
+  <style>
+    * {
+      box-sizing: border-box;
+    }
 
-main{
-  max-width:1100px;
-  margin:20px auto;
-  padding:0 15px
-}
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f5f6f8;
+      color: #111;
+    }
 
-.card{
-  background:#fff;
-  padding:18px;
-  border-radius:12px;
-  margin:14px 0;
-  box-shadow:0 2px 10px #0001
-}
+    header {
+      background: #111;
+      color: #fff;
+      padding: 24px;
+    }
 
-input{
-  padding:10px;
-  margin:4px;
-  border:1px solid #ddd;
-  border-radius:8px
-}
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 26px;
+    }
 
-button{
-  padding:10px 14px;
-  border:0;
-  border-radius:8px;
-  background:#111;
-  color:#fff;
-  margin:4px;
-  cursor:pointer
-}
+    header p {
+      margin: 0;
+      opacity: .75;
+    }
 
-button:hover{
-  opacity:.8
-}
+    main {
+      max-width: 1150px;
+      margin: 20px auto;
+      padding: 0 15px;
+    }
 
-table{
-  width:100%;
-  background:#fff;
-  border-collapse:collapse
-}
+    .card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.06);
+    }
 
-td,th{
-  padding:10px;
-  border-bottom:1px solid #eee;
-  text-align:left
-}
+    h2 {
+      margin-top: 0;
+    }
 
-#status{
-  padding:10px;
-  border-radius:8px;
-  background:#eee;
-  margin-bottom:15px
-}
-</style>
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    input,
+    textarea {
+      width: 100%;
+      padding: 11px;
+      border: 1px solid #ddd;
+      border-radius: 9px;
+      font-size: 14px;
+    }
+
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+
+    button {
+      border: 0;
+      border-radius: 9px;
+      padding: 10px 14px;
+      margin: 4px 3px;
+      background: #111;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    button:hover {
+      opacity: .82;
+    }
+
+    button.secondary {
+      background: #555;
+    }
+
+    button.success {
+      background: #16803c;
+    }
+
+    button.warning {
+      background: #a45b00;
+    }
+
+    button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .status {
+      padding: 12px;
+      border-radius: 9px;
+      background: #eee;
+    }
+
+    .status.ok {
+      background: #d9f7df;
+      color: #145c2a;
+    }
+
+    .status.error {
+      background: #ffe0e0;
+      color: #8b0000;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 700px;
+    }
+
+    th,
+    td {
+      padding: 12px 10px;
+      border-bottom: 1px solid #eee;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #fafafa;
+    }
+
+    .empty {
+      text-align: center;
+      padding: 30px;
+      color: #777;
+    }
+
+    .loading {
+      color: #777;
+      padding: 20px 0;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #111;
+      color: #eee;
+      padding: 15px;
+      border-radius: 10px;
+      overflow-x: auto;
+    }
+
+    .result {
+      margin-top: 15px;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 5px 9px;
+      border-radius: 20px;
+      background: #eee;
+      font-size: 12px;
+    }
+
+    @media(max-width:700px) {
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+
+      header h1 {
+        font-size: 21px;
+      }
+    }
+  </style>
 </head>
 
 <body>
 
 <header>
-<h1>AI TikTok Shop Autopilot</h1>
-<div>Gemini • Trends • Products • Videos • Queue</div>
+  <h1>AI TikTok Shop Autopilot</h1>
+  <p>Products • Trends • Gemini • Scripts • Videos • Queue</p>
 </header>
 
 <main>
 
-<div class="card">
-<h2>สถานะระบบ</h2>
-<div id="status">กำลังตรวจสอบ...</div>
-</div>
+  <!-- STATUS -->
+  <section class="card">
+    <h2>สถานะระบบ</h2>
+    <div id="status" class="status">
+      กำลังตรวจสอบ API...
+    </div>
+  </section>
 
-<div class="card">
-<h2>เพิ่มสินค้า</h2>
 
-<input id="n" placeholder="ชื่อสินค้า">
-<input id="p" placeholder="ราคา" type="number">
-<input id="c" placeholder="Commission" type="number">
-<input id="u" placeholder="ลิงก์สินค้า">
-<input id="note" placeholder="จุดขาย">
+  <!-- ADD PRODUCT -->
+  <section class="card">
+    <h2>เพิ่มสินค้า</h2>
 
-<button onclick="add()">เพิ่มสินค้า</button>
-</div>
+    <div class="form-grid">
 
-<div class="card">
+      <input
+        id="productName"
+        placeholder="ชื่อสินค้า"
+      >
 
-<h2>สินค้า</h2>
+      <input
+        id="productPrice"
+        type="number"
+        placeholder="ราคา"
+      >
 
-<table>
+      <input
+        id="productCommission"
+        type="number"
+        placeholder="Commission"
+      >
 
-<thead>
-<tr>
-<th>สินค้า</th>
-<th>ราคา</th>
-<th>Commission</th>
-<th>AI</th>
-</tr>
-</thead>
+      <input
+        id="productUrl"
+        placeholder="ลิงก์สินค้า"
+      >
 
-<tbody id="list"></tbody>
+    </div>
 
-</table>
+    <br>
 
-</div>
+    <textarea
+      id="productNotes"
+      placeholder="จุดขายสินค้า"
+    ></textarea>
+
+    <br>
+
+    <button onclick="addProduct()">
+      เพิ่มสินค้า
+    </button>
+
+  </section>
+
+
+  <!-- PRODUCTS -->
+  <section class="card">
+
+    <h2>สินค้า</h2>
+
+    <div class="table-wrap">
+
+      <table>
+
+        <thead>
+          <tr>
+            <th>สินค้า</th>
+            <th>ราคา</th>
+            <th>Commission</th>
+            <th>AI</th>
+          </tr>
+        </thead>
+
+        <tbody id="productList">
+          <tr>
+            <td colspan="4" class="loading">
+              กำลังโหลดสินค้า...
+            </td>
+          </tr>
+        </tbody>
+
+      </table>
+
+    </div>
+
+  </section>
+
+
+  <!-- RESULT -->
+  <section id="resultCard" class="card hidden">
+
+    <h2>ผลลัพธ์ AI</h2>
+
+    <div id="result"></div>
+
+  </section>
+
+
+  <!-- VIDEOS -->
+  <section class="card">
+
+    <h2>วิดีโอ</h2>
+
+    <button
+      class="secondary"
+      onclick="loadVideos()"
+    >
+      โหลดรายการวิดีโอ
+    </button>
+
+    <div id="videoList"></div>
+
+  </section>
+
+
+  <!-- QUEUE -->
+  <section class="card">
+
+    <h2>คิวโพสต์</h2>
+
+    <button
+      class="secondary"
+      onclick="loadQueue()"
+    >
+      โหลดคิว
+    </button>
+
+    <div id="queueList"></div>
+
+  </section>
 
 </main>
 
+
 <script>
 
-/*
-  ตอน Deploy บน Render
-  ให้เปลี่ยนค่านี้เป็น URL ของ Backend เช่น:
-
-  https://tiktok-autopilot-api.onrender.com
-*/
+/* =========================================================
+   CONFIG
+========================================================= */
 
 window.AUTOPILOT_API =
-  window.AUTOPILOT_API ||
   "https://tiktok-autopilot-api.onrender.com";
 
-const A = window.AUTOPILOT_API;
+const API = window.AUTOPILOT_API;
+
+
+/* =========================================================
+   ELEMENTS
+========================================================= */
+
+const statusEl =
+  document.getElementById("status");
+
+const productList =
+  document.getElementById("productList");
+
+const resultCard =
+  document.getElementById("resultCard");
+
+const resultEl =
+  document.getElementById("result");
+
+const videoList =
+  document.getElementById("videoList");
+
+const queueList =
+  document.getElementById("queueList");
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function escapeHtml(value) {
+
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+
+function showResult(data) {
+
+  resultCard.classList.remove("hidden");
+
+  if (typeof data === "string") {
+
+    resultEl.innerHTML =
+      "<pre>" +
+      escapeHtml(data) +
+      "</pre>";
+
+    return;
+  }
+
+  resultEl.innerHTML =
+    "<pre>" +
+    escapeHtml(
+      JSON.stringify(data, null, 2)
+    ) +
+    "</pre>";
+}
 
 
 async function api(path, options = {}) {
 
-  const response = await fetch(A + path, options);
+  const response =
+    await fetch(API + path, {
+      ...options,
+      headers: {
+        "Accept": "application/json",
+        ...(options.headers || {})
+      }
+    });
+
+  const text =
+    await response.text();
+
+  let data;
+
+  try {
+    data =
+      text ? JSON.parse(text) : {};
+  } catch {
+    data = text;
+  }
 
   if (!response.ok) {
 
-    const text = await response.text();
+    let message;
+
+    if (
+      data &&
+      typeof data === "object" &&
+      data.detail
+    ) {
+      message = data.detail;
+    } else {
+      message =
+        typeof data === "string"
+          ? data
+          : JSON.stringify(data);
+    }
 
     throw new Error(
-      "API Error " +
+      "HTTP " +
       response.status +
       ": " +
-      text
+      message
     );
   }
 
-  return response;
+  return data;
 }
 
 
-async function checkHealth(){
+/* =========================================================
+   HEALTH
+========================================================= */
+
+async function checkHealth() {
 
   try {
 
-    const r = await api("/health");
-    const data = await r.json();
+    const data =
+      await api("/health");
 
-    if(data.ok){
+    if (data.ok) {
 
-      status.textContent =
+      statusEl.textContent =
         "🟢 API เชื่อมต่อแล้ว";
 
-      status.style.background =
-        "#d9f7df";
+      statusEl.className =
+        "status ok";
+
+    } else {
+
+      throw new Error(
+        "API health check failed"
+      );
     }
 
-  } catch(error){
-
-    status.textContent =
-      "🔴 ไม่สามารถเชื่อมต่อ Backend";
-
-    status.style.background =
-      "#ffdede";
+  } catch (error) {
 
     console.error(error);
+
+    statusEl.textContent =
+      "🔴 API เชื่อมต่อไม่ได้: " +
+      error.message;
+
+    statusEl.className =
+      "status error";
   }
 }
 
 
-async function load(){
+/* =========================================================
+   PRODUCTS
+========================================================= */
 
-  try{
+async function loadProducts() {
 
-    const r =
-      await api("/products");
+  productList.innerHTML =
+    `
+    <tr>
+      <td colspan="4" class="loading">
+        กำลังโหลดสินค้า...
+      </td>
+    </tr>
+    `;
+
+  try {
 
     const products =
-      await r.json();
+      await api("/products");
 
-    list.innerHTML =
-      products.map(q => `
+    if (
+      !Array.isArray(products) ||
+      products.length === 0
+    ) {
 
+      productList.innerHTML =
+        `
+        <tr>
+          <td colspan="4" class="empty">
+            ยังไม่มีสินค้า
+          </td>
+        </tr>
+        `;
+
+      return;
+    }
+
+    productList.innerHTML =
+      products.map(product => {
+
+        return `
         <tr>
 
-          <td>${escapeHtml(q.name)}</td>
+          <td>
+            <strong>
+              ${escapeHtml(product.name)}
+            </strong>
 
-          <td>${q.price ?? ""}</td>
+            ${
+              product.url
+                ? `
+                  <br>
+                  <a
+                    href="${escapeHtml(product.url)}"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    ดูสินค้า
+                  </a>
+                `
+                : ""
+            }
+          </td>
 
-          <td>${q.commission ?? ""}</td>
+          <td>
+            ${product.price ?? ""}
+          </td>
+
+          <td>
+            ${product.commission ?? ""}
+          </td>
 
           <td>
 
             <button
-              onclick="trend('${q.id}')">
+              onclick="analyzeTrend('${product.id}')"
+            >
               วิเคราะห์เทรนด์
             </button>
 
             <button
-              onclick="createScript('${q.id}')">
+              onclick="createScripts('${product.id}')"
+            >
               สร้างสคริปต์
             </button>
 
           </td>
 
         </tr>
+        `;
 
-      `).join("");
+      }).join("");
 
-  }catch(error){
+  } catch (error) {
 
     console.error(error);
 
-    list.innerHTML =
-      "<tr><td colspan='4'>ไม่สามารถโหลดสินค้าได้</td></tr>";
+    productList.innerHTML =
+      `
+      <tr>
+        <td colspan="4" class="empty">
+          โหลดสินค้าไม่สำเร็จ
+          <br>
+          ${escapeHtml(error.message)}
+        </td>
+      </tr>
+      `;
   }
 }
 
 
-async function add(){
+/* =========================================================
+   ADD PRODUCT
+========================================================= */
 
-  if(!n.value.trim()){
+async function addProduct() {
+
+  const name =
+    document
+      .getElementById("productName")
+      .value
+      .trim();
+
+  const price =
+    document
+      .getElementById("productPrice")
+      .value;
+
+  const commission =
+    document
+      .getElementById("productCommission")
+      .value;
+
+  const url =
+    document
+      .getElementById("productUrl")
+      .value
+      .trim();
+
+  const notes =
+    document
+      .getElementById("productNotes")
+      .value
+      .trim();
+
+
+  if (!name) {
 
     alert("กรุณาใส่ชื่อสินค้า");
 
     return;
   }
 
-  try{
 
-    await api("/products",{
+  try {
 
-      method:"POST",
+    await api("/products", {
 
-      headers:{
+      method: "POST",
+
+      headers: {
         "Content-Type":
-        "application/json"
+          "application/json"
       },
 
-      body:JSON.stringify({
+      body: JSON.stringify({
 
-        name:n.value.trim(),
+        name: name,
 
         price:
-          p.value
-          ? Number(p.value)
-          : null,
+          price
+            ? Number(price)
+            : null,
 
         commission:
-          c.value
-          ? Number(c.value)
-          : null,
+          commission
+            ? Number(commission)
+            : null,
 
-        url:u.value.trim(),
+        url: url || null,
 
-        notes:note.value.trim()
+        notes: notes || null
 
       })
 
     });
 
-    n.value="";
-    p.value="";
-    c.value="";
-    u.value="";
-    note.value="";
 
-    await load();
+    document
+      .getElementById("productName")
+      .value = "";
 
-    alert("เพิ่มสินค้าเรียบร้อย");
+    document
+      .getElementById("productPrice")
+      .value = "";
 
-  }catch(error){
+    document
+      .getElementById("productCommission")
+      .value = "";
 
-    alert(error.message);
+    document
+      .getElementById("productUrl")
+      .value = "";
+
+    document
+      .getElementById("productNotes")
+      .value = "";
+
+
+    await loadProducts();
+
+    alert(
+      "เพิ่มสินค้าเรียบร้อย"
+    );
+
+  } catch (error) {
+
+    console.error(error);
+
+    alert(
+      "เพิ่มสินค้าไม่สำเร็จ\n\n" +
+      error.message
+    );
   }
 }
 
 
-async function trend(id){
+/* =========================================================
+   TREND
+========================================================= */
+
+async function analyzeTrend(id) {
 
   const input =
     prompt(
-      'ข้อมูลเทรนด์ที่คุณมี เช่น {"views_growth":30,"sales_growth":15}',
+      "ใส่ข้อมูลเทรนด์ที่คุณมีในรูปแบบ JSON\n\n" +
+      'ตัวอย่าง:\n' +
+      '{"views_growth":30,"sales_growth":15,"search_growth":22}',
       "{}"
     );
 
-  if(input === null)
+  if (input === null) {
     return;
+  }
+
 
   let evidence;
 
-  try{
+  try {
 
     evidence =
       JSON.parse(input);
 
-  }catch{
+  } catch {
 
-    alert("JSON ไม่ถูกต้อง");
+    alert(
+      "ข้อมูล JSON ไม่ถูกต้อง"
+    );
 
     return;
   }
 
-  try{
 
-    const r =
+  try {
+
+    const data =
       await api(
         "/products/" +
-        id +
+        encodeURIComponent(id) +
         "/trend",
         {
-          method:"POST",
 
-          headers:{
+          method: "POST",
+
+          headers: {
             "Content-Type":
-            "application/json"
+              "application/json"
           },
 
-          body:JSON.stringify({
-            evidence:evidence
+          body: JSON.stringify({
+            evidence: evidence
           })
+
         }
       );
 
-    const result =
-      await r.json();
+
+    showResult(data);
+
+  } catch (error) {
+
+    console.error(error);
+
+    showResult({
+      error: error.message
+    });
 
     alert(
-      "Trend Score: " +
-      result.score +
-      "\n\n" +
-      "Momentum: " +
-      result.momentum +
-      "\n\n" +
-      "Competition: " +
-      result.competition +
-      "\n\n" +
-      "Decision: " +
-      result.decision
+      "วิเคราะห์เทรนด์ไม่สำเร็จ\n\n" +
+      error.message
     );
-
-  }catch(error){
-
-    alert(error.message);
   }
 }
 
 
-async function createScript(id){
+/* =========================================================
+   GEMINI SCRIPTS
+========================================================= */
 
-  try{
+async function createScripts(id) {
 
-    const r =
+  resultCard.classList.remove("hidden");
+
+  resultEl.innerHTML =
+    "<p>🤖 Gemini กำลังสร้างสคริปต์...</p>";
+
+
+  try {
+
+    const data =
       await api(
         "/products/" +
-        id +
+        encodeURIComponent(id) +
         "/scripts",
         {
-          method:"POST"
+          method: "POST"
         }
       );
 
-    const result =
-      await r.json();
+
+    showResult(data);
 
     alert(
-      "สร้างสคริปต์แล้ว " +
-      result.video_ids.length +
+      "สร้างสคริปต์สำเร็จ " +
+      (
+        data.video_ids
+          ? data.video_ids.length
+          : 0
+      ) +
       " แบบ"
     );
 
-  }catch(error){
 
-    alert(error.message);
+    await loadVideos();
+
+  } catch (error) {
+
+    console.error(
+      "CREATE SCRIPT ERROR:",
+      error
+    );
+
+
+    showResult({
+      success: false,
+      error: error.message
+    });
+
+
+    alert(
+      "สร้างสคริปต์ไม่สำเร็จ\n\n" +
+      error.message +
+      "\n\n" +
+      "ตรวจสอบ Render Logs ได้จาก " +
+      "tiktok-autopilot-api"
+    );
   }
 }
 
 
-function escapeHtml(value){
+/* =========================================================
+   VIDEOS
+========================================================= */
 
-  return String(value ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+async function loadVideos() {
+
+  videoList.innerHTML =
+    "<p class='loading'>กำลังโหลด...</p>";
+
+
+  try {
+
+    const videos =
+      await api("/videos");
+
+
+    if (
+      !Array.isArray(videos) ||
+      videos.length === 0
+    ) {
+
+      videoList.innerHTML =
+        "<p class='empty'>ยังไม่มีวิดีโอ</p>";
+
+      return;
+    }
+
+
+    videoList.innerHTML =
+      videos.map(video => {
+
+        return `
+          <div class="card">
+
+            <strong>
+              ${escapeHtml(video.product)}
+            </strong>
+
+            <br>
+
+            <span class="badge">
+              ${escapeHtml(video.variant)}
+            </span>
+
+            <span class="badge">
+              ${escapeHtml(video.status)}
+            </span>
+
+            <br>
+
+            <button
+              class="success"
+              onclick="renderVideo('${video.id}')"
+            >
+              Render วิดีโอ
+            </button>
+
+          </div>
+        `;
+
+      }).join("");
+
+
+  } catch (error) {
+
+    console.error(error);
+
+    videoList.innerHTML =
+      `
+      <p class="error">
+        ${escapeHtml(error.message)}
+      </p>
+      `;
+  }
 }
 
 
-checkHealth();
-load();
+/* =========================================================
+   RENDER VIDEO
+========================================================= */
+
+async function renderVideo(id) {
+
+  if (
+    !confirm(
+      "ต้องการสร้างไฟล์วิดีโอหรือไม่?"
+    )
+  ) {
+    return;
+  }
+
+
+  try {
+
+    const data =
+      await api(
+        "/videos/" +
+        encodeURIComponent(id) +
+        "/render",
+        {
+          method: "POST"
+        }
+      );
+
+
+    showResult(data);
+
+    await loadVideos();
+
+  } catch (error) {
+
+    console.error(error);
+
+    alert(
+      "Render วิดีโอไม่สำเร็จ\n\n" +
+      error.message
+    );
+  }
+}
+
+
+/* =========================================================
+   QUEUE
+========================================================= */
+
+async function loadQueue() {
+
+  queueList.innerHTML =
+    "<p class='loading'>กำลังโหลด...</p>";
+
+
+  try {
+
+    const queue =
+      await api("/queue");
+
+
+    if (
+      !Array.isArray(queue) ||
+      queue.length === 0
+    ) {
+
+      queueList.innerHTML =
+        "<p class='empty'>ยังไม่มีคิว</p>";
+
+      return;
+    }
+
+
+    queueList.innerHTML =
+      queue.map(item => {
+
+        return `
+          <div class="card">
+
+            <strong>
+              ${escapeHtml(item.product)}
+            </strong>
+
+            <br>
+
+            <span class="badge">
+              ${escapeHtml(item.variant)}
+            </span>
+
+            <span class="badge">
+              ${escapeHtml(item.status)}
+            </span>
+
+          </div>
+        `;
+
+      }).join("");
+
+
+  } catch (error) {
+
+    console.error(error);
+
+    queueList.innerHTML =
+      `
+      <p>
+        ${escapeHtml(error.message)}
+      </p>
+      `;
+  }
+}
+
+
+/* =========================================================
+   START
+========================================================= */
+
+async function init() {
+
+  await checkHealth();
+
+  await loadProducts();
+
+  await loadVideos();
+
+  await loadQueue();
+}
+
+
+init();
 
 </script>
 
