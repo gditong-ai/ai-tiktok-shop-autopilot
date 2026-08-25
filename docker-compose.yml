@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: autopilot
+      POSTGRES_USER: autopilot
+      POSTGRES_PASSWORD: change-me
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://autopilot:change-me@postgres:5432/autopilot
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    volumes: ["./data:/app/data"]
+    ports: ["8000:8000"]
+    depends_on: [postgres]
+  n8n:
+    image: n8nio/n8n:latest
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: autopilot
+      DB_POSTGRESDB_USER: autopilot
+      DB_POSTGRESDB_PASSWORD: change-me
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change-this-long-random-secret}
+      N8N_SECURE_COOKIE: "false"
+    volumes: [n8ndata:/home/node/.n8n]
+    ports: ["5678:5678"]
+    depends_on: [postgres]
+  dashboard:
+    image: nginx:alpine
+    volumes: ["./dashboard:/usr/share/nginx/html:ro"]
+    ports: ["3000:80"]
+volumes: {pgdata: {}, n8ndata: {}}
