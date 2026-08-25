@@ -1,81 +1,31 @@
 import os
 import json
 import uuid
-import secrets
-import subprocess
-from pathlib import Path
-from urllib.parse import urlencode
+from datetime import datetime, timezone
+from typing import Any
 
-import httpx
 import psycopg
-
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-
 from pydantic import BaseModel, Field
-
 from google import genai
 
 
-# ============================================================
+# =========================================================
 # CONFIG
-# ============================================================
+# =========================================================
 
-DB = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-DATA = Path("/app/data")
-DATA.mkdir(parents=True, exist_ok=True)
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not configured")
 
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.6-flash"
-)
-
-TIKTOK_CLIENT_KEY = os.getenv(
-    "TIKTOK_CLIENT_KEY"
-)
-
-TIKTOK_CLIENT_SECRET = os.getenv(
-    "TIKTOK_CLIENT_SECRET"
-)
-
-TIKTOK_REDIRECT_URI = os.getenv(
-    "TIKTOK_REDIRECT_URI"
-)
-
-TIKTOK_AUTH_URL = (
-    "https://www.tiktok.com/v2/auth/authorize/"
-)
-
-TIKTOK_TOKEN_URL = (
-    "https://open.tiktokapis.com/v2/oauth/token/"
-)
-
-TIKTOK_CREATOR_INFO_URL = (
-    "https://open.tiktokapis.com/v2/post/publish/creator_info/query/"
-)
-
-TIKTOK_DIRECT_POST_URL = (
-    "https://open.tiktokapis.com/v2/post/publish/video/init/"
-)
-
-TIKTOK_UPLOAD_URL = (
-    "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
-)
-
-TIKTOK_STATUS_URL = (
-    "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
-)
-
-
-# ============================================================
-# APP
-# ============================================================
 
 app = FastAPI(
-    title="AI TikTok Shop Autopilot",
-    version="0.2.0"
+    title="AI TikTok Shop Trend Autopilot",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -87,1682 +37,969 @@ app.add_middleware(
 )
 
 
-# ============================================================
+# =========================================================
 # DATABASE
-# ============================================================
+# =========================================================
 
-def conn():
-
-    if not DB:
-        raise RuntimeError(
-            "DATABASE_URL is not configured"
-        )
-
-    return psycopg.connect(DB)
+def db():
+    return psycopg.connect(DATABASE_URL)
 
 
 @app.on_event("startup")
-def init():
-
-    with conn() as c:
-
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS products(
+def startup():
+    with db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trend_products (
                 id UUID PRIMARY KEY,
                 name TEXT NOT NULL,
+                category TEXT,
                 price NUMERIC,
                 commission NUMERIC,
-                url TEXT,
-                notes TEXT,
+                product_url TEXT,
+                image_url TEXT,
+                source TEXT,
+                trend_data JSONB DEFAULT '{}'::jsonb,
+                trend_score NUMERIC DEFAULT 0,
+                demand_score NUMERIC DEFAULT 0,
+                competition_score NUMERIC DEFAULT 0,
+                content_score NUMERIC DEFAULT 0,
+                affiliate_score NUMERIC DEFAULT 0,
+                ai_score NUMERIC DEFAULT 0,
+                decision TEXT DEFAULT 'review',
+                reasons JSONB DEFAULT '[]'::jsonb,
+                content_angles JSONB DEFAULT '[]'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trend_snapshots (
+                id UUID PRIMARY KEY,
+                product_id UUID REFERENCES trend_products(id)
+                    ON DELETE CASCADE,
+                source TEXT,
+                data JSONB NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT now()
             );
-            """
-        )
+        """)
 
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS trends(
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS selected_products (
                 id UUID PRIMARY KEY,
-                product_id UUID REFERENCES products(id),
-                score NUMERIC,
-                momentum NUMERIC,
-                competition NUMERIC,
-                data JSONB,
+                product_id UUID REFERENCES trend_products(id)
+                    ON DELETE CASCADE,
+                selected_by TEXT DEFAULT 'ai',
+                reason TEXT,
                 created_at TIMESTAMPTZ DEFAULT now()
             );
-            """
-        )
+        """)
 
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS videos(
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scripts (
                 id UUID PRIMARY KEY,
-                product_id UUID REFERENCES products(id),
+                product_id UUID REFERENCES trend_products(id)
+                    ON DELETE CASCADE,
                 variant TEXT,
-                script JSONB,
-                file_path TEXT,
-                status TEXT DEFAULT 'draft',
+                script JSONB NOT NULL,
                 created_at TIMESTAMPTZ DEFAULT now()
             );
-            """
-        )
+        """)
 
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS queue(
-                id UUID PRIMARY KEY,
-                video_id UUID REFERENCES videos(id),
-                scheduled_at TIMESTAMPTZ,
-                status TEXT DEFAULT 'queued',
-                external_post_id TEXT
-            );
-            """
-        )
-
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tiktok_accounts(
-                id UUID PRIMARY KEY,
-                open_id TEXT UNIQUE,
-                access_token TEXT NOT NULL,
-                refresh_token TEXT,
-                expires_at TIMESTAMPTZ,
-                refresh_expires_at TIMESTAMPTZ,
-                scope TEXT,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            );
-            """
-        )
-
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tiktok_publish(
-                id UUID PRIMARY KEY,
-                video_id UUID REFERENCES videos(id),
-                account_id UUID REFERENCES tiktok_accounts(id),
-                publish_id TEXT,
-                mode TEXT,
-                status TEXT,
-                response JSONB,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            );
-            """
-        )
+        conn.commit()
 
 
-# ============================================================
-# MODELS
-# ============================================================
-
-class Product(BaseModel):
-
-    name: str
-
-    price: float | None = None
-
-    commission: float | None = None
-
-    url: str | None = None
-
-    notes: str | None = None
-
-
-class Evidence(BaseModel):
-
-    evidence: dict = Field(
-        default_factory=dict
-    )
-
-
-class TikTokPublishRequest(BaseModel):
-
-    title: str | None = None
-
-    privacy_level: str | None = None
-
-    disable_comment: bool = False
-
-    disable_duet: bool = False
-
-    disable_stitch: bool = False
-
-
-# ============================================================
+# =========================================================
 # GEMINI
-# ============================================================
+# =========================================================
 
-def ai(prompt: str):
-
-    key = os.getenv("GEMINI_API_KEY")
-
-    if not key:
-
+def gemini(prompt: str) -> str:
+    if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=500,
             detail="GEMINI_API_KEY is not configured"
         )
 
     try:
-
-        client = genai.Client(
-            api_key=key
-        )
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt
         )
 
-        if response is None:
-
-            raise RuntimeError(
-                "Gemini returned no response"
+        if not response or not response.text:
+            raise HTTPException(
+                status_code=500,
+                detail="Gemini returned an empty response"
             )
 
-        text = getattr(
-            response,
-            "text",
-            None
-        )
-
-        if not text:
-
-            raise RuntimeError(
-                "Gemini returned empty text"
-            )
-
-        return text
-
-    except HTTPException:
-        raise
+        return response.text
 
     except Exception as e:
-
-        print(
-            "GEMINI ERROR:",
-            type(e).__name__,
-            str(e),
-            flush=True
-        )
-
         raise HTTPException(
             status_code=502,
             detail={
-                "message":
-                    "Gemini API request failed",
-                "error_type":
-                    type(e).__name__,
-                "error":
-                    str(e)
+                "message": "Gemini API request failed",
+                "error_type": type(e).__name__,
+                "error": str(e)
             }
         )
 
 
-# ============================================================
+def extract_json(text: str) -> Any:
+    """
+    รองรับ Gemini ที่อาจตอบกลับมาเป็น ```json ... ```
+    """
+
+    text = text.strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        text = "\n".join(lines).strip()
+
+    # JSON object
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+
+        try:
+            return json.loads(text[start:end])
+        except Exception:
+            pass
+
+    # JSON array
+    if "[" in text and "]" in text:
+        start = text.find("[")
+        end = text.rfind("]") + 1
+
+        try:
+            return json.loads(text[start:end])
+        except Exception:
+            pass
+
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "message": "Gemini did not return valid JSON",
+            "raw": text[:2000]
+        }
+    )
+
+
+# =========================================================
+# MODELS
+# =========================================================
+
+class TrendProduct(BaseModel):
+    name: str
+    category: str | None = None
+    price: float | None = None
+    commission: float | None = None
+    product_url: str | None = None
+    image_url: str | None = None
+    source: str = "manual_feed"
+
+    # ข้อมูลที่ระบบได้รับจากแหล่งข้อมูลที่ได้รับอนุญาต
+    trend_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class DiscoverRequest(BaseModel):
+    products: list[TrendProduct]
+
+
+class SelectRequest(BaseModel):
+    product_id: str
+
+
+class AutoSelectRequest(BaseModel):
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+# =========================================================
 # HEALTH
-# ============================================================
+# =========================================================
 
 @app.get("/")
 def root():
-
     return {
-        "name":
-            "AI TikTok Shop Autopilot",
-        "version":
-            "0.2.0",
-        "status":
-            "online"
+        "name": "AI TikTok Shop Trend Autopilot",
+        "version": "2.0.0",
+        "status": "running"
     }
 
 
 @app.get("/health")
 def health():
-
-    return {
-        "ok": True
-    }
-
-
-@app.get("/gemini-test")
-def gemini_test():
-
-    result = ai(
-        "ตอบเพียงคำว่า OK"
-    )
-
     return {
         "ok": True,
         "model": GEMINI_MODEL,
-        "response": result
+        "time": datetime.now(timezone.utc).isoformat()
     }
 
 
-# ============================================================
-# PRODUCTS
-# ============================================================
+# =========================================================
+# TREND DISCOVERY
+# =========================================================
 
-@app.get("/products")
-def products():
+@app.post("/trends/discover")
+def discover_trends(request: DiscoverRequest):
 
-    with conn() as c:
+    if not request.products:
+        raise HTTPException(
+            status_code=400,
+            detail="No products supplied"
+        )
 
-        rows = c.execute(
-            """
-            SELECT
-                id,
-                name,
-                price,
-                commission,
-                url,
-                notes
-            FROM products
-            ORDER BY created_at DESC
-            """
-        ).fetchall()
-
-    return [
+    product_data = [
         {
-            "id": str(row[0]),
-            "name": row[1],
-            "price":
-                float(row[2])
-                if row[2] is not None
-                else None,
-            "commission":
-                float(row[3])
-                if row[3] is not None
-                else None,
-            "url": row[4],
-            "notes": row[5]
+            "name": p.name,
+            "category": p.category,
+            "price": p.price,
+            "commission": p.commission,
+            "product_url": p.product_url,
+            "source": p.source,
+            "trend_data": p.trend_data
         }
-        for row in rows
+        for p in request.products
     ]
 
-
-@app.post("/products")
-def add_product(
-    product: Product
-):
-
-    product_id = uuid.uuid4()
-
-    with conn() as c:
-
-        c.execute(
-            """
-            INSERT INTO products(
-                id,
-                name,
-                price,
-                commission,
-                url,
-                notes
-            )
-            VALUES(
-                %s,%s,%s,%s,%s,%s
-            )
-            """,
-            (
-                product_id,
-                product.name,
-                product.price,
-                product.commission,
-                product.url,
-                product.notes
-            )
-        )
-
-    return {
-        "id": str(product_id),
-        "status": "created"
-    }
-
-
-# ============================================================
-# TREND
-# ============================================================
-
-@app.post("/products/{pid}/trend")
-def trend(
-    pid: str,
-    evidence: Evidence
-):
-
-    try:
-        product_id = uuid.UUID(pid)
-
-    except ValueError:
-
-        raise HTTPException(
-            400,
-            "Invalid product ID"
-        )
-
-    with conn() as c:
-
-        product = c.execute(
-            """
-            SELECT
-                name,
-                price,
-                commission,
-                url,
-                notes
-            FROM products
-            WHERE id=%s
-            """,
-            (product_id,)
-        ).fetchone()
-
-    if not product:
-
-        raise HTTPException(
-            404,
-            "Product not found"
-        )
-
     prompt = f"""
-Analyze this TikTok Shop product.
+You are an AI TikTok Shop affiliate trend analyst.
 
-Use ONLY supplied evidence.
-Do not invent live metrics.
+Analyze ONLY the supplied product/trend data.
 
-Product:
-{product}
+IMPORTANT:
+- Do NOT invent TikTok metrics.
+- Do NOT claim that a product is trending on TikTok unless the supplied evidence supports it.
+- Do NOT invent sales, views, orders or commission.
+- If evidence is missing, lower the confidence.
+- This is affiliate content analysis.
+- Avoid medical, financial, guaranteed-result or misleading claims.
 
-Evidence:
-{json.dumps(
-    evidence.evidence,
-    ensure_ascii=False
-)}
+Score every product from 0-100 for:
 
-Return JSON only:
+1. trend_score
+2. demand_score
+3. competition_score
+4. content_score
+5. affiliate_score
+6. ai_score
+
+For competition_score:
+100 = low competition / good opportunity
+0 = extremely competitive
+
+For the final ai_score, consider:
+
+trend
+demand
+competition opportunity
+content potential
+affiliate commission
+price attractiveness
+
+Return JSON ONLY.
+
+Format:
 
 {{
- "score": 0,
- "momentum": 0,
- "competition": 0,
- "decision": "",
- "reasons": [],
- "content_angles": []
+  "products": [
+    {{
+      "name": "product name",
+      "trend_score": 0,
+      "demand_score": 0,
+      "competition_score": 0,
+      "content_score": 0,
+      "affiliate_score": 0,
+      "ai_score": 0,
+      "decision": "strong_candidate|candidate|review|skip",
+      "confidence": 0,
+      "reasons": [],
+      "content_angles": []
+    }}
+  ]
 }}
+
+PRODUCT DATA:
+
+{json.dumps(product_data, ensure_ascii=False)}
 """
 
-    raw = ai(prompt)
+    result = extract_json(gemini(prompt))
 
-    try:
-
-        start = raw.find("{")
-        end = raw.rfind("}")
-
-        data = json.loads(
-            raw[start:end + 1]
-        )
-
-    except Exception as e:
-
+    if not isinstance(result, dict):
         raise HTTPException(
-            502,
-            {
-                "message":
-                    "Invalid Gemini JSON",
-                "error":
-                    str(e)
-            }
+            status_code=502,
+            detail="Invalid AI trend response"
         )
 
-    trend_id = uuid.uuid4()
+    analyzed = result.get("products", [])
 
-    with conn() as c:
+    saved = []
 
-        c.execute(
-            """
-            INSERT INTO trends(
-                id,
-                product_id,
-                score,
-                momentum,
-                competition,
-                data
-            )
-            VALUES(
-                %s,%s,%s,%s,%s,%s
-            )
-            """,
-            (
-                trend_id,
-                product_id,
-                data.get("score", 0),
-                data.get("momentum", 0),
-                data.get("competition", 0),
-                json.dumps(
-                    data,
-                    ensure_ascii=False
-                )
-            )
-        )
+    with db() as conn:
 
-    return data
+        for item, original in zip(analyzed, request.products):
 
+            product_id = uuid.uuid4()
 
-# ============================================================
-# SCRIPTS
-# ============================================================
-
-@app.post("/products/{pid}/scripts")
-def scripts(pid: str):
-
-    try:
-        product_id = uuid.UUID(pid)
-
-    except ValueError:
-
-        raise HTTPException(
-            400,
-            "Invalid product ID"
-        )
-
-    with conn() as c:
-
-        product = c.execute(
-            """
-            SELECT
-                name,
-                price,
-                commission,
-                notes
-            FROM products
-            WHERE id=%s
-            """,
-            (product_id,)
-        ).fetchone()
-
-    if not product:
-
-        raise HTTPException(
-            404,
-            "Product not found"
-        )
-
-    prompt = f"""
-Create 3 original Thai TikTok Shop
-video concepts.
-
-Product:
-{product}
-
-Rules:
-- Thai language
-- Original content
-- No unsupported medical claims
-- No guaranteed income claims
-- No guaranteed results
-- Suitable for TikTok Shop
-
-Return JSON array only.
-
-Each item:
-
-variant
-hook
-scenes
-caption
-hashtags
-cta
-
-Each scene:
-
-seconds
-visual
-voiceover
-"""
-
-    raw = ai(prompt)
-
-    try:
-
-        start = raw.find("[")
-        end = raw.rfind("]")
-
-        concepts = json.loads(
-            raw[start:end + 1]
-        )
-
-    except Exception as e:
-
-        raise HTTPException(
-            502,
-            {
-                "message":
-                    "Invalid Gemini JSON",
-                "error":
-                    str(e),
-                "raw":
-                    raw[:2000]
-            }
-        )
-
-    video_ids = []
-
-    with conn() as c:
-
-        for concept in concepts:
-
-            video_id = uuid.uuid4()
-
-            c.execute(
+            conn.execute(
                 """
-                INSERT INTO videos(
+                INSERT INTO trend_products (
                     id,
-                    product_id,
-                    variant,
-                    script,
-                    status
+                    name,
+                    category,
+                    price,
+                    commission,
+                    product_url,
+                    image_url,
+                    source,
+                    trend_data,
+                    trend_score,
+                    demand_score,
+                    competition_score,
+                    content_score,
+                    affiliate_score,
+                    ai_score,
+                    decision,
+                    reasons,
+                    content_angles,
+                    updated_at
                 )
-                VALUES(
-                    %s,%s,%s,%s,'draft'
+                VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,now()
                 )
                 """,
                 (
-                    video_id,
                     product_id,
-                    str(
-                        concept.get(
-                            "variant",
-                            "A"
-                        )
+                    original.name,
+                    original.category,
+                    original.price,
+                    original.commission,
+                    original.product_url,
+                    original.image_url,
+                    original.source,
+                    json.dumps(
+                        original.trend_data,
+                        ensure_ascii=False
+                    ),
+                    item.get("trend_score", 0),
+                    item.get("demand_score", 0),
+                    item.get("competition_score", 0),
+                    item.get("content_score", 0),
+                    item.get("affiliate_score", 0),
+                    item.get("ai_score", 0),
+                    item.get("decision", "review"),
+                    json.dumps(
+                        item.get("reasons", []),
+                        ensure_ascii=False
                     ),
                     json.dumps(
-                        concept,
+                        item.get("content_angles", []),
                         ensure_ascii=False
                     )
                 )
             )
 
-            video_ids.append(
-                str(video_id)
-            )
-
-    return {
-        "video_ids": video_ids,
-        "scripts": concepts
-    }
-
-
-# ============================================================
-# VIDEOS
-# ============================================================
-
-@app.get("/videos")
-def videos():
-
-    with conn() as c:
-
-        rows = c.execute(
-            """
-            SELECT
-                v.id,
-                v.product_id,
-                p.name,
-                v.variant,
-                v.status
-            FROM videos v
-            JOIN products p
-              ON p.id=v.product_id
-            ORDER BY v.created_at DESC
-            """
-        ).fetchall()
-
-    return [
-        {
-            "id": str(row[0]),
-            "product_id": str(row[1]),
-            "product": row[2],
-            "variant": row[3],
-            "status": row[4]
-        }
-        for row in rows
-    ]
-
-
-# ============================================================
-# RENDER
-# ============================================================
-
-@app.post("/videos/{vid}/render")
-def render_video(vid: str):
-
-    try:
-        video_id = uuid.UUID(vid)
-
-    except ValueError:
-
-        raise HTTPException(
-            400,
-            "Invalid video ID"
-        )
-
-    with conn() as c:
-
-        row = c.execute(
-            """
-            SELECT script
-            FROM videos
-            WHERE id=%s
-            """,
-            (video_id,)
-        ).fetchone()
-
-    if not row:
-
-        raise HTTPException(
-            404,
-            "Video not found"
-        )
-
-    script = row[0]
-
-    try:
-
-        duration = sum(
-            float(
-                x.get("seconds", 3)
-            )
-            for x in script.get(
-                "scenes",
-                []
-            )
-        )
-
-        duration = max(
-            5,
-            min(60, duration)
-        )
-
-    except Exception:
-
-        duration = 15
-
-    output = DATA / (
-        f"{video_id}.mp4"
-    )
-
-    try:
-
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=black:s=1080x1920:r=30",
-                "-t",
-                str(duration),
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                str(output)
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-
-    except Exception as e:
-
-        raise HTTPException(
-            500,
-            {
-                "message":
-                    "FFmpeg rendering failed",
-                "error":
-                    str(e)
-            }
-        )
-
-    with conn() as c:
-
-        c.execute(
-            """
-            UPDATE videos
-            SET
-                file_path=%s,
-                status='ready'
-            WHERE id=%s
-            """,
-            (
-                str(output),
-                video_id
-            )
-        )
-
-    return {
-        "file": str(output),
-        "status": "ready"
-    }
-
-
-# ============================================================
-# TIKTOK CONFIG CHECK
-# ============================================================
-
-def check_tiktok_config():
-
-    missing = []
-
-    if not TIKTOK_CLIENT_KEY:
-        missing.append(
-            "TIKTOK_CLIENT_KEY"
-        )
-
-    if not TIKTOK_CLIENT_SECRET:
-        missing.append(
-            "TIKTOK_CLIENT_SECRET"
-        )
-
-    if not TIKTOK_REDIRECT_URI:
-        missing.append(
-            "TIKTOK_REDIRECT_URI"
-        )
-
-    if missing:
-
-        raise HTTPException(
-            500,
-            {
-                "message":
-                    "TikTok API is not configured",
-                "missing":
-                    missing
-            }
-        )
-
-
-# ============================================================
-# TIKTOK OAUTH
-# ============================================================
-
-@app.get("/tiktok/login")
-def tiktok_login():
-
-    check_tiktok_config()
-
-    state = secrets.token_urlsafe(32)
-
-    scopes = (
-        "user.info.basic,"
-        "video.upload,"
-        "video.publish"
-    )
-
-    params = {
-        "client_key":
-            TIKTOK_CLIENT_KEY,
-
-        "response_type":
-            "code",
-
-        "scope":
-            scopes,
-
-        "redirect_uri":
-            TIKTOK_REDIRECT_URI,
-
-        "state":
-            state
-    }
-
-    url = (
-        TIKTOK_AUTH_URL
-        + "?"
-        + urlencode(params)
-    )
-
-    return RedirectResponse(
-        url=url
-    )
-
-
-@app.get("/tiktok/callback")
-async def tiktok_callback(
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None
-):
-
-    if error:
-
-        raise HTTPException(
-            400,
-            f"TikTok OAuth error: {error}"
-        )
-
-    if not code:
-
-        raise HTTPException(
-            400,
-            "Missing OAuth code"
-        )
-
-    check_tiktok_config()
-
-    payload = {
-        "client_key":
-            TIKTOK_CLIENT_KEY,
-
-        "client_secret":
-            TIKTOK_CLIENT_SECRET,
-
-        "code":
-            code,
-
-        "grant_type":
-            "authorization_code",
-
-        "redirect_uri":
-            TIKTOK_REDIRECT_URI
-    }
-
-    async with httpx.AsyncClient(
-        timeout=30
-    ) as client:
-
-        response = await client.post(
-            TIKTOK_TOKEN_URL,
-            data=payload
-        )
-
-    if response.status_code >= 400:
-
-        raise HTTPException(
-            502,
-            {
-                "message":
-                    "TikTok token exchange failed",
-                "response":
-                    response.text
-            }
-        )
-
-    data = response.json()
-
-    access_token = data.get(
-        "access_token"
-    )
-
-    refresh_token = data.get(
-        "refresh_token"
-    )
-
-    open_id = data.get(
-        "open_id"
-    )
-
-    if not access_token or not open_id:
-
-        raise HTTPException(
-            502,
-            {
-                "message":
-                    "TikTok did not return required OAuth data",
-                "response":
-                    data
-            }
-        )
-
-    with conn() as c:
-
-        account = c.execute(
-            """
-            SELECT id
-            FROM tiktok_accounts
-            WHERE open_id=%s
-            """,
-            (open_id,)
-        ).fetchone()
-
-        if account:
-
-            account_id = account[0]
-
-            c.execute(
+            conn.execute(
                 """
-                UPDATE tiktok_accounts
-                SET
-                    access_token=%s,
-                    refresh_token=%s,
-                    scope=%s,
-                    updated_at=now()
-                WHERE id=%s
-                """,
-                (
-                    access_token,
-                    refresh_token,
-                    data.get("scope"),
-                    account_id
-                )
-            )
-
-        else:
-
-            account_id = uuid.uuid4()
-
-            c.execute(
-                """
-                INSERT INTO tiktok_accounts(
+                INSERT INTO trend_snapshots (
                     id,
-                    open_id,
-                    access_token,
-                    refresh_token,
-                    scope
+                    product_id,
+                    source,
+                    data
                 )
-                VALUES(
-                    %s,%s,%s,%s,%s
-                )
+                VALUES (%s,%s,%s,%s)
                 """,
                 (
-                    account_id,
-                    open_id,
-                    access_token,
-                    refresh_token,
-                    data.get("scope")
+                    uuid.uuid4(),
+                    product_id,
+                    original.source,
+                    json.dumps(
+                        original.trend_data,
+                        ensure_ascii=False
+                    )
                 )
             )
 
+            saved.append({
+                "id": str(product_id),
+                "name": original.name,
+                **item
+            })
+
+        conn.commit()
+
+    saved.sort(
+        key=lambda x: float(x.get("ai_score", 0)),
+        reverse=True
+    )
+
     return {
-        "ok": True,
-        "message":
-            "TikTok account connected",
-        "account_id":
-            str(account_id)
+        "success": True,
+        "count": len(saved),
+        "products": saved
     }
 
 
-# ============================================================
-# TIKTOK ACCOUNT STATUS
-# ============================================================
+# =========================================================
+# GET TREND PRODUCTS
+# =========================================================
 
-@app.get("/tiktok/status")
-async def tiktok_status():
+@app.get("/trends")
+def get_trends():
 
-    with conn() as c:
+    with db() as conn:
 
-        row = c.execute(
+        rows = conn.execute(
             """
             SELECT
                 id,
-                open_id,
-                scope,
-                updated_at
-            FROM tiktok_accounts
-            ORDER BY updated_at DESC
-            LIMIT 1
+                name,
+                category,
+                price,
+                commission,
+                product_url,
+                source,
+                trend_score,
+                demand_score,
+                competition_score,
+                content_score,
+                affiliate_score,
+                ai_score,
+                decision,
+                reasons,
+                content_angles,
+                created_at
+            FROM trend_products
+            ORDER BY ai_score DESC, created_at DESC
             """
-        ).fetchone()
+        ).fetchall()
 
-    if not row:
+    result = []
 
-        return {
-            "connected": False
-        }
+    for r in rows:
 
-    return {
-        "connected": True,
-        "account_id": str(row[0]),
-        "open_id": row[1],
-        "scope": row[2],
-        "updated_at": str(row[3])
-    }
+        result.append({
+            "id": str(r[0]),
+            "name": r[1],
+            "category": r[2],
+            "price": float(r[3]) if r[3] is not None else None,
+            "commission": float(r[4]) if r[4] is not None else None,
+            "product_url": r[5],
+            "source": r[6],
+            "trend_score": float(r[7] or 0),
+            "demand_score": float(r[8] or 0),
+            "competition_score": float(r[9] or 0),
+            "content_score": float(r[10] or 0),
+            "affiliate_score": float(r[11] or 0),
+            "ai_score": float(r[12] or 0),
+            "decision": r[13],
+            "reasons": r[14],
+            "content_angles": r[15],
+            "created_at": r[16]
+        })
 
-
-# ============================================================
-# GET TIKTOK ACCOUNT
-# ============================================================
-
-def get_tiktok_account():
-
-    with conn() as c:
-
-        row = c.execute(
-            """
-            SELECT
-                id,
-                access_token,
-                open_id
-            FROM tiktok_accounts
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-
-    if not row:
-
-        raise HTTPException(
-            400,
-            "TikTok account is not connected"
-        )
-
-    return {
-        "id": row[0],
-        "access_token": row[1],
-        "open_id": row[2]
-    }
+    return result
 
 
-# ============================================================
-# CREATOR INFO
-# ============================================================
+# =========================================================
+# TOP TRENDING
+# =========================================================
 
-@app.get("/tiktok/creator-info")
-async def creator_info():
+@app.get("/trends/top")
+def top_trends(limit: int = 10):
 
-    account = get_tiktok_account()
+    limit = max(1, min(limit, 50))
 
-    headers = {
-        "Authorization":
-            f"Bearer {account['access_token']}"
-    }
+    with db() as conn:
 
-    async with httpx.AsyncClient(
-        timeout=30
-    ) as client:
-
-        response = await client.post(
-            TIKTOK_CREATOR_INFO_URL,
-            headers=headers
-        )
-
-    if response.status_code >= 400:
-
-        raise HTTPException(
-            response.status_code,
-            {
-                "message":
-                    "TikTok Creator Info failed",
-                "response":
-                    response.text
-            }
-        )
-
-    return response.json()
-
-
-# ============================================================
-# DIRECT POST
-# ============================================================
-
-@app.post(
-    "/videos/{vid}/tiktok/publish"
-)
-async def tiktok_publish(
-    vid: str,
-    request: TikTokPublishRequest
-):
-
-    try:
-        video_id = uuid.UUID(vid)
-
-    except ValueError:
-
-        raise HTTPException(
-            400,
-            "Invalid video ID"
-        )
-
-    account = get_tiktok_account()
-
-    with conn() as c:
-
-        video = c.execute(
+        rows = conn.execute(
             """
             SELECT
                 id,
-                file_path,
-                status
-            FROM videos
-            WHERE id=%s
+                name,
+                category,
+                price,
+                commission,
+                trend_score,
+                demand_score,
+                competition_score,
+                content_score,
+                affiliate_score,
+                ai_score,
+                decision,
+                reasons,
+                content_angles
+            FROM trend_products
+            ORDER BY ai_score DESC
+            LIMIT %s
             """,
-            (video_id,)
-        ).fetchone()
-
-    if not video:
-
-        raise HTTPException(
-            404,
-            "Video not found"
-        )
-
-    file_path = video[1]
-
-    if not file_path:
-
-        raise HTTPException(
-            400,
-            "Video has not been rendered"
-        )
-
-    if not Path(file_path).exists():
-
-        raise HTTPException(
-            400,
-            "Rendered video file does not exist"
-        )
-
-    creator = await creator_info()
-
-    privacy_options = creator.get(
-        "data",
-        {}
-    ).get(
-        "privacy_level_options",
-        []
-    )
-
-    privacy = (
-        request.privacy_level
-        or (
-            privacy_options[0]
-            if privacy_options
-            else "SELF_ONLY"
-        )
-    )
-
-    payload = {
-        "post_info": {
-            "title":
-                request.title or "",
-            "privacy_level":
-                privacy,
-            "disable_comment":
-                request.disable_comment,
-            "disable_duet":
-                request.disable_duet,
-            "disable_stitch":
-                request.disable_stitch
-        },
-        "source_info": {
-            "source":
-                "FILE_UPLOAD",
-            "video_size":
-                Path(file_path).stat().st_size,
-            "chunk_size":
-                Path(file_path).stat().st_size,
-            "total_chunk_count":
-                1
-        }
-    }
-
-    headers = {
-        "Authorization":
-            f"Bearer {account['access_token']}",
-        "Content-Type":
-            "application/json"
-    }
-
-    async with httpx.AsyncClient(
-        timeout=60
-    ) as client:
-
-        response = await client.post(
-            TIKTOK_DIRECT_POST_URL,
-            headers=headers,
-            json=payload
-        )
-
-    if response.status_code >= 400:
-
-        raise HTTPException(
-            response.status_code,
-            {
-                "message":
-                    "TikTok Direct Post initialization failed",
-                "response":
-                    response.text
-            }
-        )
-
-    data = response.json()
-
-    publish_id = (
-        data.get("data", {})
-        .get("publish_id")
-    )
-
-    if not publish_id:
-
-        raise HTTPException(
-            502,
-            {
-                "message":
-                    "TikTok did not return publish_id",
-                "response":
-                    data
-            }
-        )
-
-    publish_record_id = uuid.uuid4()
-
-    with conn() as c:
-
-        c.execute(
-            """
-            INSERT INTO tiktok_publish(
-                id,
-                video_id,
-                account_id,
-                publish_id,
-                mode,
-                status,
-                response
-            )
-            VALUES(
-                %s,%s,%s,%s,%s,%s,%s
-            )
-            """,
-            (
-                publish_record_id,
-                video_id,
-                account["id"],
-                publish_id,
-                "direct",
-                "processing",
-                json.dumps(
-                    data,
-                    ensure_ascii=False
-                )
-            )
-        )
-
-    return {
-        "ok": True,
-        "mode": "direct",
-        "publish_id":
-            publish_id,
-        "record_id":
-            str(publish_record_id),
-        "tiktok":
-            data
-    }
-
-
-# ============================================================
-# UPLOAD DRAFT
-# ============================================================
-
-@app.post(
-    "/videos/{vid}/tiktok/upload"
-)
-async def tiktok_upload(
-    vid: str
-):
-
-    try:
-        video_id = uuid.UUID(vid)
-
-    except ValueError:
-
-        raise HTTPException(
-            400,
-            "Invalid video ID"
-        )
-
-    account = get_tiktok_account()
-
-    with conn() as c:
-
-        video = c.execute(
-            """
-            SELECT
-                id,
-                file_path
-            FROM videos
-            WHERE id=%s
-            """,
-            (video_id,)
-        ).fetchone()
-
-    if not video:
-
-        raise HTTPException(
-            404,
-            "Video not found"
-        )
-
-    file_path = video[1]
-
-    if not file_path:
-
-        raise HTTPException(
-            400,
-            "Video has not been rendered"
-        )
-
-    path = Path(file_path)
-
-    if not path.exists():
-
-        raise HTTPException(
-            400,
-            "Video file does not exist"
-        )
-
-    size = path.stat().st_size
-
-    payload = {
-        "source_info": {
-            "source":
-                "FILE_UPLOAD",
-            "video_size":
-                size,
-            "chunk_size":
-                size,
-            "total_chunk_count":
-                1
-        }
-    }
-
-    headers = {
-        "Authorization":
-            f"Bearer {account['access_token']}",
-        "Content-Type":
-            "application/json"
-    }
-
-    async with httpx.AsyncClient(
-        timeout=60
-    ) as client:
-
-        response = await client.post(
-            TIKTOK_UPLOAD_URL,
-            headers=headers,
-            json=payload
-        )
-
-    if response.status_code >= 400:
-
-        raise HTTPException(
-            response.status_code,
-            {
-                "message":
-                    "TikTok draft upload initialization failed",
-                "response":
-                    response.text
-            }
-        )
-
-    data = response.json()
-
-    publish_id = (
-        data.get("data", {})
-        .get("publish_id")
-    )
-
-    upload_url = (
-        data.get("data", {})
-        .get("upload_url")
-    )
-
-    record_id = uuid.uuid4()
-
-    with conn() as c:
-
-        c.execute(
-            """
-            INSERT INTO tiktok_publish(
-                id,
-                video_id,
-                account_id,
-                publish_id,
-                mode,
-                status,
-                response
-            )
-            VALUES(
-                %s,%s,%s,%s,%s,%s,%s
-            )
-            """,
-            (
-                record_id,
-                video_id,
-                account["id"],
-                publish_id,
-                "draft",
-                "processing",
-                json.dumps(
-                    data,
-                    ensure_ascii=False
-                )
-            )
-        )
-
-    return {
-        "ok": True,
-        "mode": "draft",
-        "publish_id":
-            publish_id,
-        "upload_url":
-            upload_url,
-        "record_id":
-            str(record_id),
-        "tiktok":
-            data
-    }
-
-
-# ============================================================
-# PUBLISH STATUS
-# ============================================================
-
-@app.get(
-    "/tiktok/publish/{publish_id}"
-)
-async def publish_status(
-    publish_id: str
-):
-
-    account = get_tiktok_account()
-
-    headers = {
-        "Authorization":
-            f"Bearer {account['access_token']}",
-        "Content-Type":
-            "application/json"
-    }
-
-    payload = {
-        "publish_id":
-            publish_id
-    }
-
-    async with httpx.AsyncClient(
-        timeout=30
-    ) as client:
-
-        response = await client.post(
-            TIKTOK_STATUS_URL,
-            headers=headers,
-            json=payload
-        )
-
-    if response.status_code >= 400:
-
-        raise HTTPException(
-            response.status_code,
-            {
-                "message":
-                    "TikTok publish status failed",
-                "response":
-                    response.text
-            }
-        )
-
-    data = response.json()
-
-    status = (
-        data.get("data", {})
-        .get("status")
-    )
-
-    with conn() as c:
-
-        c.execute(
-            """
-            UPDATE tiktok_publish
-            SET
-                status=%s,
-                response=%s,
-                updated_at=now()
-            WHERE publish_id=%s
-            """,
-            (
-                status or "unknown",
-                json.dumps(
-                    data,
-                    ensure_ascii=False
-                ),
-                publish_id
-            )
-        )
-
-    return data
-
-
-# ============================================================
-# TIKTOK PUBLISH HISTORY
-# ============================================================
-
-@app.get("/tiktok/publishes")
-def tiktok_publishes():
-
-    with conn() as c:
-
-        rows = c.execute(
-            """
-            SELECT
-                id,
-                video_id,
-                publish_id,
-                mode,
-                status,
-                created_at,
-                updated_at
-            FROM tiktok_publish
-            ORDER BY created_at DESC
-            """
+            (limit,)
         ).fetchall()
 
     return [
         {
-            "id": str(row[0]),
-            "video_id": str(row[1]),
-            "publish_id": row[2],
-            "mode": row[3],
-            "status": row[4],
-            "created_at": str(row[5]),
-            "updated_at": str(row[6])
+            "rank": i + 1,
+            "id": str(r[0]),
+            "name": r[1],
+            "category": r[2],
+            "price": float(r[3]) if r[3] is not None else None,
+            "commission": float(r[4]) if r[4] is not None else None,
+            "trend_score": float(r[5] or 0),
+            "demand_score": float(r[6] or 0),
+            "competition_score": float(r[7] or 0),
+            "content_score": float(r[8] or 0),
+            "affiliate_score": float(r[9] or 0),
+            "ai_score": float(r[10] or 0),
+            "decision": r[11],
+            "reasons": r[12],
+            "content_angles": r[13]
         }
-        for row in rows
+        for i, r in enumerate(rows)
     ]
 
 
-# ============================================================
-# QUEUE
-# ============================================================
+# =========================================================
+# SELECT PRODUCT
+# =========================================================
 
-@app.post("/queue/{vid}")
-def enqueue(vid: str):
+@app.post("/trends/{product_id}/select")
+def select_product(product_id: str):
 
     try:
-        video_id = uuid.UUID(vid)
-
+        pid = uuid.UUID(product_id)
     except ValueError:
-
         raise HTTPException(
-            400,
-            "Invalid video ID"
+            status_code=400,
+            detail="Invalid product ID"
         )
 
-    with conn() as c:
+    with db() as conn:
 
-        video = c.execute(
+        product = conn.execute(
             """
-            SELECT id
-            FROM videos
+            SELECT
+                id,
+                name,
+                ai_score,
+                decision
+            FROM trend_products
             WHERE id=%s
             """,
-            (video_id,)
+            (pid,)
         ).fetchone()
 
-    if not video:
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail="Trend product not found"
+            )
 
-        raise HTTPException(
-            404,
-            "Video not found"
-        )
-
-    queue_id = uuid.uuid4()
-
-    with conn() as c:
-
-        c.execute(
+        conn.execute(
             """
-            INSERT INTO queue(
+            INSERT INTO selected_products (
                 id,
-                video_id,
-                status
+                product_id,
+                selected_by,
+                reason
             )
-            VALUES(
-                %s,%s,'queued'
-            )
+            VALUES (%s,%s,%s,%s)
             """,
             (
-                queue_id,
-                video_id
+                uuid.uuid4(),
+                pid,
+                "user",
+                "Selected from AI trend dashboard"
             )
         )
 
+        conn.commit()
+
     return {
-        "id": str(queue_id),
-        "video_id": str(video_id),
-        "status": "queued"
+        "success": True,
+        "product_id": product_id,
+        "name": product[1],
+        "ai_score": float(product[2] or 0),
+        "decision": product[3]
     }
 
 
-@app.get("/queue")
-def get_queue():
+# =========================================================
+# AI AUTO SELECT
+# =========================================================
 
-    with conn() as c:
+@app.post("/trends/auto-select")
+def auto_select(request: AutoSelectRequest):
 
-        rows = c.execute(
+    with db() as conn:
+
+        products = conn.execute(
             """
             SELECT
-                q.id,
-                q.video_id,
-                q.status,
+                id,
+                name,
+                category,
+                price,
+                commission,
+                trend_score,
+                demand_score,
+                competition_score,
+                content_score,
+                affiliate_score,
+                ai_score,
+                decision
+            FROM trend_products
+            WHERE decision IN (
+                'strong_candidate',
+                'candidate'
+            )
+            ORDER BY ai_score DESC
+            LIMIT %s
+            """,
+            (request.limit,)
+        ).fetchall()
+
+        selected = []
+
+        for p in products:
+
+            product_id = p[0]
+
+            # ป้องกันการเลือกซ้ำ
+            exists = conn.execute(
+                """
+                SELECT 1
+                FROM selected_products
+                WHERE product_id=%s
+                LIMIT 1
+                """,
+                (product_id,)
+            ).fetchone()
+
+            if exists:
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO selected_products (
+                    id,
+                    product_id,
+                    selected_by,
+                    reason
+                )
+                VALUES (%s,%s,%s,%s)
+                """,
+                (
+                    uuid.uuid4(),
+                    product_id,
+                    "ai",
+                    f"AI selected product with score {p[10]}"
+                )
+            )
+
+            selected.append({
+                "id": str(product_id),
+                "name": p[1],
+                "ai_score": float(p[10] or 0),
+                "decision": p[11]
+            })
+
+        conn.commit()
+
+    return {
+        "success": True,
+        "selected": selected
+    }
+
+
+# =========================================================
+# SELECTED PRODUCTS
+# =========================================================
+
+@app.get("/selected")
+def get_selected():
+
+    with db() as conn:
+
+        rows = conn.execute(
+            """
+            SELECT
+                s.id,
+                s.product_id,
                 p.name,
-                v.variant
-            FROM queue q
-            JOIN videos v
-              ON v.id=q.video_id
-            JOIN products p
-              ON p.id=v.product_id
-            ORDER BY
-                q.scheduled_at NULLS LAST
+                p.category,
+                p.price,
+                p.commission,
+                p.product_url,
+                p.ai_score,
+                s.selected_by,
+                s.reason,
+                s.created_at
+            FROM selected_products s
+            JOIN trend_products p
+                ON p.id=s.product_id
+            ORDER BY s.created_at DESC
             """
         ).fetchall()
 
     return [
         {
-            "id": str(row[0]),
-            "video_id": str(row[1]),
-            "status": row[2],
-            "product": row[3],
-            "variant": row[4]
+            "id": str(r[0]),
+            "product_id": str(r[1]),
+            "name": r[2],
+            "category": r[3],
+            "price": float(r[4]) if r[4] is not None else None,
+            "commission": float(r[5]) if r[5] is not None else None,
+            "product_url": r[6],
+            "ai_score": float(r[7] or 0),
+            "selected_by": r[8],
+            "reason": r[9],
+            "created_at": r[10]
         }
-        for row in rows
+        for r in rows
     ]
+
+
+# =========================================================
+# AI SCRIPT GENERATOR
+# =========================================================
+
+@app.post("/trends/{product_id}/scripts")
+def generate_scripts(product_id: str):
+
+    try:
+        pid = uuid.UUID(product_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid product ID"
+        )
+
+    with db() as conn:
+
+        product = conn.execute(
+            """
+            SELECT
+                name,
+                category,
+                price,
+                commission,
+                product_url,
+                trend_data,
+                trend_score,
+                demand_score,
+                competition_score,
+                content_score,
+                affiliate_score,
+                ai_score,
+                content_angles
+            FROM trend_products
+            WHERE id=%s
+            """,
+            (pid,)
+        ).fetchone()
+
+    if not product:
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+
+    product_info = {
+        "name": product[0],
+        "category": product[1],
+        "price": product[2],
+        "commission": product[3],
+        "product_url": product[4],
+        "trend_data": product[5],
+        "trend_score": product[6],
+        "demand_score": product[7],
+        "competition_score": product[8],
+        "content_score": product[9],
+        "affiliate_score": product[10],
+        "ai_score": product[11],
+        "content_angles": product[12]
+    }
+
+    prompt = f"""
+You are a professional Thai TikTok Shop affiliate content creator.
+
+Create 3 ORIGINAL short-form video concepts for this product.
+
+IMPORTANT:
+- Do not invent product specifications.
+- Do not make medical claims.
+- Do not make guaranteed-result claims.
+- Do not claim fake discounts.
+- Do not fabricate reviews.
+- Use only the supplied product information.
+- Make the content suitable for affiliate marketing.
+- The viewer should understand why they may want to check the product.
+- Do not pretend to be the product owner.
+- Use natural Thai language.
+
+Each concept must contain:
+
+variant
+hook
+target_audience
+scenes
+voiceover
+caption
+hashtags
+cta
+
+Scenes should be 5-8 scenes.
+
+Each scene must contain:
+
+seconds
+visual
+voiceover
+text_overlay
+
+Return JSON ONLY:
+
+{{
+  "scripts": [
+    {{
+      "variant": "A",
+      "hook": "...",
+      "target_audience": "...",
+      "scenes": [
+        {{
+          "seconds": 3,
+          "visual": "...",
+          "voiceover": "...",
+          "text_overlay": "..."
+        }}
+      ],
+      "caption": "...",
+      "hashtags": ["...", "..."],
+      "cta": "..."
+    }}
+  ]
+}}
+
+PRODUCT:
+
+{json.dumps(product_info, ensure_ascii=False, default=str)}
+"""
+
+    result = extract_json(gemini(prompt))
+
+    scripts = result.get("scripts", [])
+
+    if not scripts:
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini returned no scripts"
+        )
+
+    saved = []
+
+    with db() as conn:
+
+        for script in scripts:
+
+            script_id = uuid.uuid4()
+
+            conn.execute(
+                """
+                INSERT INTO scripts (
+                    id,
+                    product_id,
+                    variant,
+                    script
+                )
+                VALUES (%s,%s,%s,%s)
+                """,
+                (
+                    script_id,
+                    pid,
+                    script.get("variant", "A"),
+                    json.dumps(
+                        script,
+                        ensure_ascii=False
+                    )
+                )
+            )
+
+            saved.append({
+                "id": str(script_id),
+                **script
+            })
+
+        conn.commit()
+
+    return {
+        "success": True,
+        "product_id": product_id,
+        "scripts": saved
+    }
+
+
+# =========================================================
+# GET SCRIPTS
+# =========================================================
+
+@app.get("/scripts")
+def get_scripts():
+
+    with db() as conn:
+
+        rows = conn.execute(
+            """
+            SELECT
+                s.id,
+                s.product_id,
+                p.name,
+                s.variant,
+                s.script,
+                s.created_at
+            FROM scripts s
+            JOIN trend_products p
+                ON p.id=s.product_id
+            ORDER BY s.created_at DESC
+            """
+        ).fetchall()
+
+    return [
+        {
+            "id": str(r[0]),
+            "product_id": str(r[1]),
+            "product": r[2],
+            "variant": r[3],
+            "script": r[4],
+            "created_at": r[5]
+        }
+        for r in rows
+    ]
+
+
+# =========================================================
+# DELETE OLD TREND DATA
+# =========================================================
+
+@app.delete("/trends/clear")
+def clear_trends():
+
+    with db() as conn:
+
+        conn.execute("DELETE FROM trend_products")
+        conn.commit()
+
+    return {
+        "success": True,
+        "message": "Trend database cleared"
+    }
