@@ -2,10 +2,14 @@ services:
   - type: web
     name: tiktok-autopilot-api
     runtime: docker
+    region: singapore
+    plan: free
+
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: free
+
     healthCheckPath: /health
+
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -25,12 +29,11 @@ services:
     name: tiktok-autopilot-dashboard
     runtime: static
     rootDir: dashboard
-    buildCommand: echo "Dashboard ready"
     staticPublishPath: .
-    plan: free
 
 databases:
   - name: tiktok-autopilot-db
     plan: free
+    region: singapore
     databaseName: autopilot
     user: autopilot
