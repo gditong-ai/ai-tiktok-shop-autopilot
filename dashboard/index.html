@@ -1,1 +1,417 @@
-<!doctype html><meta charset="utf-8"><title>AI TikTok Shop Autopilot</title><style>body{font-family:Arial;background:#f5f6f8;margin:0;color:#111}header{background:#111;color:#fff;padding:22px}main{max-width:1100px;margin:20px auto;padding:0 15px}.card{background:#fff;padding:18px;border-radius:12px;margin:14px 0}input{padding:10px;margin:4px;border:1px solid #ddd;border-radius:8px}button{padding:10px 14px;border:0;border-radius:8px;background:#111;color:#fff;margin:4px;cursor:pointer}table{width:100%;background:#fff;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #eee;text-align:left}</style><script>window.AUTOPILOT_API="";</script><header><h1>AI TikTok Shop Autopilot</h1><div>Gemini • Trends • Products • Videos • Queue</div></header><main><div class=card><h2>เพิ่มสินค้า</h2><input id=n placeholder="ชื่อสินค้า"><input id=p placeholder="ราคา"><input id=c placeholder="Commission"><input id=u placeholder="ลิงก์สินค้า"><input id=note placeholder="จุดขาย"><button onclick=add()>เพิ่ม</button></div><div class=card><h2>สินค้า</h2><table><thead><tr><th>สินค้า</th><th>ราคา</th><th>Commission</th><th>AI</th></tr></thead><tbody id=list></tbody></table></div></main><script>const A='http://localhost:8000';async function load(){let x=await fetch(A+'/products').then(r=>r.json());list.innerHTML=x.map(q=>`<tr><td>${q.name}</td><td>${q.price||''}</td><td>${q.commission||''}</td><td><button onclick="trend('${q.id}')">วิเคราะห์เทรนด์</button><button onclick="script('${q.id}')">สร้างสคริปต์</button></td></tr>`).join('')}async function add(){await fetch(A+'/products',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n.value,price:+p.value||null,commission:+c.value||null,url:u.value,notes:note.value})});load()}async function trend(id){let e=prompt('ข้อมูลเทรนด์ที่คุณมี เช่น {"views_growth":30,"sales_growth":15}','{}');if(e!==null)alert(await (await fetch(A+'/products/'+id+'/trend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({evidence:JSON.parse(e)})})).text())}async function script(id){alert(await (await fetch(A+'/products/'+id+'/scripts',{method:'POST'})).text());}load()</script>
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI TikTok Shop Autopilot</title>
+
+<style>
+body{
+  font-family:Arial,sans-serif;
+  background:#f5f6f8;
+  margin:0;
+  color:#111
+}
+
+header{
+  background:#111;
+  color:#fff;
+  padding:22px
+}
+
+main{
+  max-width:1100px;
+  margin:20px auto;
+  padding:0 15px
+}
+
+.card{
+  background:#fff;
+  padding:18px;
+  border-radius:12px;
+  margin:14px 0;
+  box-shadow:0 2px 10px #0001
+}
+
+input{
+  padding:10px;
+  margin:4px;
+  border:1px solid #ddd;
+  border-radius:8px
+}
+
+button{
+  padding:10px 14px;
+  border:0;
+  border-radius:8px;
+  background:#111;
+  color:#fff;
+  margin:4px;
+  cursor:pointer
+}
+
+button:hover{
+  opacity:.8
+}
+
+table{
+  width:100%;
+  background:#fff;
+  border-collapse:collapse
+}
+
+td,th{
+  padding:10px;
+  border-bottom:1px solid #eee;
+  text-align:left
+}
+
+#status{
+  padding:10px;
+  border-radius:8px;
+  background:#eee;
+  margin-bottom:15px
+}
+</style>
+</head>
+
+<body>
+
+<header>
+<h1>AI TikTok Shop Autopilot</h1>
+<div>Gemini • Trends • Products • Videos • Queue</div>
+</header>
+
+<main>
+
+<div class="card">
+<h2>สถานะระบบ</h2>
+<div id="status">กำลังตรวจสอบ...</div>
+</div>
+
+<div class="card">
+<h2>เพิ่มสินค้า</h2>
+
+<input id="n" placeholder="ชื่อสินค้า">
+<input id="p" placeholder="ราคา" type="number">
+<input id="c" placeholder="Commission" type="number">
+<input id="u" placeholder="ลิงก์สินค้า">
+<input id="note" placeholder="จุดขาย">
+
+<button onclick="add()">เพิ่มสินค้า</button>
+</div>
+
+<div class="card">
+
+<h2>สินค้า</h2>
+
+<table>
+
+<thead>
+<tr>
+<th>สินค้า</th>
+<th>ราคา</th>
+<th>Commission</th>
+<th>AI</th>
+</tr>
+</thead>
+
+<tbody id="list"></tbody>
+
+</table>
+
+</div>
+
+</main>
+
+<script>
+
+/*
+  ตอน Deploy บน Render
+  ให้เปลี่ยนค่านี้เป็น URL ของ Backend เช่น:
+
+  https://tiktok-autopilot-api.onrender.com
+*/
+
+window.AUTOPILOT_API =
+  window.AUTOPILOT_API ||
+  "https://tiktok-autopilot-api.onrender.com";
+
+const A = window.AUTOPILOT_API;
+
+
+async function api(path, options = {}) {
+
+  const response = await fetch(A + path, options);
+
+  if (!response.ok) {
+
+    const text = await response.text();
+
+    throw new Error(
+      "API Error " +
+      response.status +
+      ": " +
+      text
+    );
+  }
+
+  return response;
+}
+
+
+async function checkHealth(){
+
+  try {
+
+    const r = await api("/health");
+    const data = await r.json();
+
+    if(data.ok){
+
+      status.textContent =
+        "🟢 API เชื่อมต่อแล้ว";
+
+      status.style.background =
+        "#d9f7df";
+    }
+
+  } catch(error){
+
+    status.textContent =
+      "🔴 ไม่สามารถเชื่อมต่อ Backend";
+
+    status.style.background =
+      "#ffdede";
+
+    console.error(error);
+  }
+}
+
+
+async function load(){
+
+  try{
+
+    const r =
+      await api("/products");
+
+    const products =
+      await r.json();
+
+    list.innerHTML =
+      products.map(q => `
+
+        <tr>
+
+          <td>${escapeHtml(q.name)}</td>
+
+          <td>${q.price ?? ""}</td>
+
+          <td>${q.commission ?? ""}</td>
+
+          <td>
+
+            <button
+              onclick="trend('${q.id}')">
+              วิเคราะห์เทรนด์
+            </button>
+
+            <button
+              onclick="createScript('${q.id}')">
+              สร้างสคริปต์
+            </button>
+
+          </td>
+
+        </tr>
+
+      `).join("");
+
+  }catch(error){
+
+    console.error(error);
+
+    list.innerHTML =
+      "<tr><td colspan='4'>ไม่สามารถโหลดสินค้าได้</td></tr>";
+  }
+}
+
+
+async function add(){
+
+  if(!n.value.trim()){
+
+    alert("กรุณาใส่ชื่อสินค้า");
+
+    return;
+  }
+
+  try{
+
+    await api("/products",{
+
+      method:"POST",
+
+      headers:{
+        "Content-Type":
+        "application/json"
+      },
+
+      body:JSON.stringify({
+
+        name:n.value.trim(),
+
+        price:
+          p.value
+          ? Number(p.value)
+          : null,
+
+        commission:
+          c.value
+          ? Number(c.value)
+          : null,
+
+        url:u.value.trim(),
+
+        notes:note.value.trim()
+
+      })
+
+    });
+
+    n.value="";
+    p.value="";
+    c.value="";
+    u.value="";
+    note.value="";
+
+    await load();
+
+    alert("เพิ่มสินค้าเรียบร้อย");
+
+  }catch(error){
+
+    alert(error.message);
+  }
+}
+
+
+async function trend(id){
+
+  const input =
+    prompt(
+      'ข้อมูลเทรนด์ที่คุณมี เช่น {"views_growth":30,"sales_growth":15}',
+      "{}"
+    );
+
+  if(input === null)
+    return;
+
+  let evidence;
+
+  try{
+
+    evidence =
+      JSON.parse(input);
+
+  }catch{
+
+    alert("JSON ไม่ถูกต้อง");
+
+    return;
+  }
+
+  try{
+
+    const r =
+      await api(
+        "/products/" +
+        id +
+        "/trend",
+        {
+          method:"POST",
+
+          headers:{
+            "Content-Type":
+            "application/json"
+          },
+
+          body:JSON.stringify({
+            evidence:evidence
+          })
+        }
+      );
+
+    const result =
+      await r.json();
+
+    alert(
+      "Trend Score: " +
+      result.score +
+      "\n\n" +
+      "Momentum: " +
+      result.momentum +
+      "\n\n" +
+      "Competition: " +
+      result.competition +
+      "\n\n" +
+      "Decision: " +
+      result.decision
+    );
+
+  }catch(error){
+
+    alert(error.message);
+  }
+}
+
+
+async function createScript(id){
+
+  try{
+
+    const r =
+      await api(
+        "/products/" +
+        id +
+        "/scripts",
+        {
+          method:"POST"
+        }
+      );
+
+    const result =
+      await r.json();
+
+    alert(
+      "สร้างสคริปต์แล้ว " +
+      result.video_ids.length +
+      " แบบ"
+    );
+
+  }catch(error){
+
+    alert(error.message);
+  }
+}
+
+
+function escapeHtml(value){
+
+  return String(value ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+
+checkHealth();
+load();
+
+</script>
+
+</body>
+</html>
