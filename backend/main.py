@@ -11,15 +11,28 @@ from pydantic import BaseModel, Field
 from google import genai
 
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# ============================================================
+# CONFIG
+# ============================================================
+
+DB = os.getenv("DATABASE_URL")
 DATA = Path("/app/data")
 DATA.mkdir(parents=True, exist_ok=True)
 
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not configured")
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-2.5-flash"
+)
 
 
-app = FastAPI(title="AI TikTok Shop Autopilot")
+# ============================================================
+# APP
+# ============================================================
+
+app = FastAPI(
+    title="AI TikTok Shop Autopilot",
+    version="0.1.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,15 +43,27 @@ app.add_middleware(
 )
 
 
+# ============================================================
+# DATABASE
+# ============================================================
+
 def conn():
-    return psycopg.connect(DATABASE_URL)
+    if not DB:
+        raise RuntimeError(
+            "DATABASE_URL is not configured"
+        )
+
+    return psycopg.connect(DB)
 
 
 @app.on_event("startup")
-def init_database():
+def init():
+
     with conn() as c:
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS products (
+
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS products(
                 id UUID PRIMARY KEY,
                 name TEXT NOT NULL,
                 price NUMERIC,
@@ -47,10 +72,12 @@ def init_database():
                 notes TEXT,
                 created_at TIMESTAMPTZ DEFAULT now()
             );
-        """)
+            """
+        )
 
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS trends (
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trends(
                 id UUID PRIMARY KEY,
                 product_id UUID REFERENCES products(id),
                 score NUMERIC,
@@ -59,10 +86,12 @@ def init_database():
                 data JSONB,
                 created_at TIMESTAMPTZ DEFAULT now()
             );
-        """)
+            """
+        )
 
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS videos (
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS videos(
                 id UUID PRIMARY KEY,
                 product_id UUID REFERENCES products(id),
                 variant TEXT,
@@ -71,267 +100,665 @@ def init_database():
                 status TEXT DEFAULT 'draft',
                 created_at TIMESTAMPTZ DEFAULT now()
             );
-        """)
+            """
+        )
 
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS queue (
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS queue(
                 id UUID PRIMARY KEY,
                 video_id UUID REFERENCES videos(id),
                 scheduled_at TIMESTAMPTZ,
                 status TEXT DEFAULT 'queued',
                 external_post_id TEXT
             );
-        """)
+            """
+        )
 
-        c.commit()
 
+# ============================================================
+# MODELS
+# ============================================================
 
 class Product(BaseModel):
+
     name: str
+
     price: float | None = None
+
     commission: float | None = None
+
     url: str | None = None
+
     notes: str | None = None
 
 
 class Evidence(BaseModel):
-    evidence: dict = Field(default_factory=dict)
 
+    evidence: dict = Field(
+        default_factory=dict
+    )
+
+
+# ============================================================
+# GEMINI
+# ============================================================
 
 def ai(prompt: str):
+
     key = os.getenv("GEMINI_API_KEY")
 
     if not key:
+
         raise HTTPException(
             status_code=500,
             detail="GEMINI_API_KEY is not configured"
         )
 
-    client = genai.Client(api_key=key)
-
-    response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=prompt,
+    model = os.getenv(
+        "GEMINI_MODEL",
+        "gemini-2.5-flash"
     )
 
-    return response.text
+    try:
 
+        print(
+            f"Calling Gemini model: {model}",
+            flush=True
+        )
+
+        client = genai.Client(
+            api_key=key
+        )
+
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt
+        )
+
+        if response is None:
+
+            raise RuntimeError(
+                "Gemini returned no response"
+            )
+
+        text = getattr(
+            response,
+            "text",
+            None
+        )
+
+        if not text:
+
+            raise RuntimeError(
+                "Gemini returned empty text"
+            )
+
+        print(
+            "Gemini request successful",
+            flush=True
+        )
+
+        return text
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print(
+            "================ GEMINI ERROR ================",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(e).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Error: {str(e)}",
+            flush=True
+        )
+
+        print(
+            "================================================",
+            flush=True
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message":
+                    "Gemini API request failed",
+
+                "error_type":
+                    type(e).__name__,
+
+                "error":
+                    str(e)
+            }
+        )
+
+
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.get("/health")
 def health():
-    return {"ok": True}
 
+    return {
+        "ok": True
+    }
+
+
+# ============================================================
+# GEMINI TEST
+# ============================================================
+
+@app.get("/gemini-test")
+def gemini_test():
+
+    try:
+
+        result = ai(
+            "ตอบเพียงคำว่า OK"
+        )
+
+        return {
+            "ok": True,
+            "model": GEMINI_MODEL,
+            "response": result
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print(
+            "GEMINI TEST ERROR:",
+            type(e).__name__,
+            str(e),
+            flush=True
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=str(e)
+        )
+
+
+# ============================================================
+# PRODUCTS
+# ============================================================
 
 @app.get("/products")
 def products():
+
     with conn() as c:
-        rows = c.execute("""
-            SELECT id, name, price, commission, url, notes
+
+        rows = c.execute(
+            """
+            SELECT
+                id,
+                name,
+                price,
+                commission,
+                url,
+                notes
             FROM products
             ORDER BY created_at DESC
-        """).fetchall()
+            """
+        ).fetchall()
 
     result = []
 
-    for r in rows:
-        result.append({
-            "id": str(r[0]),
-            "name": r[1],
-            "price": float(r[2]) if r[2] is not None else None,
-            "commission": float(r[3]) if r[3] is not None else None,
-            "url": r[4],
-            "notes": r[5],
-        })
+    for row in rows:
+
+        result.append(
+            {
+                "id": str(row[0]),
+                "name": row[1],
+                "price": (
+                    float(row[2])
+                    if row[2] is not None
+                    else None
+                ),
+                "commission": (
+                    float(row[3])
+                    if row[3] is not None
+                    else None
+                ),
+                "url": row[4],
+                "notes": row[5]
+            }
+        )
 
     return result
 
 
 @app.post("/products")
-def add_product(p: Product):
+def add_product(
+    product: Product
+):
+
     product_id = uuid.uuid4()
 
     with conn() as c:
-        c.execute("""
-            INSERT INTO products
-            (id, name, price, commission, url, notes)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            product_id,
-            p.name,
-            p.price,
-            p.commission,
-            p.url,
-            p.notes,
-        ))
 
-        c.commit()
+        c.execute(
+            """
+            INSERT INTO products(
+                id,
+                name,
+                price,
+                commission,
+                url,
+                notes,
+                created_at
+            )
+            VALUES(
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                now()
+            )
+            """,
+            (
+                product_id,
+                product.name,
+                product.price,
+                product.commission,
+                product.url,
+                product.notes
+            )
+        )
 
-    return {"id": str(product_id)}
+    return {
+        "id": str(product_id),
+        "status": "created"
+    }
 
+
+# ============================================================
+# TREND ANALYSIS
+# ============================================================
 
 @app.post("/products/{pid}/trend")
-def trend(pid: str, e: Evidence):
+def trend(
+    pid: str,
+    evidence: Evidence
+):
+
+    try:
+
+        product_id = uuid.UUID(pid)
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid product ID"
+        )
+
 
     with conn() as c:
-        product = c.execute("""
-            SELECT name, price, commission, url, notes
+
+        product = c.execute(
+            """
+            SELECT
+                name,
+                price,
+                commission,
+                url,
+                notes
             FROM products
-            WHERE id = %s
-        """, (pid,)).fetchone()
+            WHERE id=%s
+            """,
+            (product_id,)
+        ).fetchone()
+
 
     if not product:
-        raise HTTPException(404, "Product not found")
+
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+
 
     prompt = f"""
-Analyze this TikTok Shop product using ONLY the supplied evidence.
+Analyze this TikTok Shop product.
 
-Do not invent live metrics.
-
-Return JSON only.
-
-Required fields:
-score
-momentum
-competition
-decision
-reasons
-content_angles
+IMPORTANT:
+- Use ONLY supplied evidence.
+- Do not invent live TikTok metrics.
+- Do not claim access to private TikTok data.
+- Return JSON only.
 
 Product:
 {product}
 
 Evidence:
-{json.dumps(e.evidence, ensure_ascii=False)}
+{json.dumps(
+    evidence.evidence,
+    ensure_ascii=False
+)}
+
+Return:
+
+{{
+  "score": 0,
+  "momentum": 0,
+  "competition": 0,
+  "decision": "",
+  "reasons": [],
+  "content_angles": []
+}}
 """
+
 
     raw = ai(prompt)
 
-    start = raw.find("{")
-    end = raw.rfind("}")
-
-    if start == -1 or end == -1:
-        raise HTTPException(502, "Gemini did not return valid JSON")
 
     try:
-        data = json.loads(raw[start:end + 1])
-    except json.JSONDecodeError:
-        raise HTTPException(502, "Gemini returned invalid JSON")
+
+        start = raw.find("{")
+        end = raw.rfind("}")
+
+        if start == -1 or end == -1:
+
+            raise ValueError(
+                "Gemini did not return JSON"
+            )
+
+        data = json.loads(
+            raw[start:end + 1]
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message":
+                    "Invalid JSON from Gemini",
+
+                "error":
+                    str(e),
+
+                "raw":
+                    raw[:2000]
+            }
+        )
+
 
     trend_id = uuid.uuid4()
 
-    with conn() as c:
-        c.execute("""
-            INSERT INTO trends
-            (id, product_id, score, momentum, competition, data)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            trend_id,
-            pid,
-            data.get("score", 0),
-            data.get("momentum", 0),
-            data.get("competition", 0),
-            json.dumps(data, ensure_ascii=False),
-        ))
 
-        c.commit()
+    with conn() as c:
+
+        c.execute(
+            """
+            INSERT INTO trends(
+                id,
+                product_id,
+                score,
+                momentum,
+                competition,
+                data,
+                created_at
+            )
+            VALUES(
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                now()
+            )
+            """,
+            (
+                trend_id,
+                product_id,
+                data.get("score", 0),
+                data.get("momentum", 0),
+                data.get("competition", 0),
+                json.dumps(
+                    data,
+                    ensure_ascii=False
+                )
+            )
+        )
+
 
     return data
 
 
+# ============================================================
+# CREATE SCRIPTS
+# ============================================================
+
 @app.post("/products/{pid}/scripts")
-def scripts(pid: str):
+def scripts(
+    pid: str
+):
+
+    try:
+
+        product_id = uuid.UUID(pid)
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid product ID"
+        )
+
 
     with conn() as c:
-        product = c.execute("""
-            SELECT name, price, commission, notes
+
+        product = c.execute(
+            """
+            SELECT
+                name,
+                price,
+                commission,
+                notes
             FROM products
-            WHERE id = %s
-        """, (pid,)).fetchone()
+            WHERE id=%s
+            """,
+            (product_id,)
+        ).fetchone()
+
 
     if not product:
-        raise HTTPException(404, "Product not found")
+
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found"
+        )
+
 
     prompt = f"""
-Create 3 ORIGINAL Thai TikTok Shop video concepts.
+Create 3 ORIGINAL Thai TikTok Shop
+short-video concepts.
 
 Product:
 {product}
 
-Do not make unsupported:
-- medical claims
-- financial claims
-- guaranteed results
+Rules:
 
-Return JSON array only.
+- Thai language.
+- Original content.
+- Do not copy another creator.
+- Do not make unsupported medical claims.
+- Do not make guaranteed income claims.
+- Do not make guaranteed results claims.
+- Suitable for TikTok Shop.
+- Each video should be approximately
+  15-30 seconds.
+- Return JSON array only.
 
 Each item must contain:
 
 variant
 hook
 scenes
-caption
-hashtags
-cta
 
 Each scene must contain:
 
 seconds
 visual
 voiceover
+
+Also include:
+
+caption
+hashtags
+cta
+
+JSON format:
+
+[
+  {{
+    "variant": "A",
+    "hook": "...",
+    "scenes": [
+      {{
+        "seconds": 3,
+        "visual": "...",
+        "voiceover": "..."
+      }}
+    ],
+    "caption": "...",
+    "hashtags": ["#..."],
+    "cta": "..."
+  }}
+]
 """
+
 
     raw = ai(prompt)
 
-    start = raw.find("[")
-    end = raw.rfind("]")
-
-    if start == -1 or end == -1:
-        raise HTTPException(
-            502,
-            "Gemini did not return a valid JSON array"
-        )
 
     try:
-        concepts = json.loads(raw[start:end + 1])
-    except json.JSONDecodeError:
-        raise HTTPException(
-            502,
-            "Gemini returned invalid JSON"
+
+        start = raw.find("[")
+        end = raw.rfind("]")
+
+        if start == -1 or end == -1:
+
+            raise ValueError(
+                "Gemini did not return JSON array"
+            )
+
+        concepts = json.loads(
+            raw[start:end + 1]
         )
+
+        if not isinstance(
+            concepts,
+            list
+        ):
+
+            raise ValueError(
+                "Gemini response is not an array"
+            )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message":
+                    "Invalid JSON from Gemini",
+
+                "error":
+                    str(e),
+
+                "raw":
+                    raw[:3000]
+            }
+        )
+
 
     video_ids = []
 
+
     with conn() as c:
+
         for concept in concepts:
 
             video_id = uuid.uuid4()
 
-            c.execute("""
-                INSERT INTO videos
-                (id, product_id, variant, script)
-                VALUES (%s, %s, %s, %s)
-            """, (
-                video_id,
-                pid,
-                concept.get("variant", "variant"),
-                json.dumps(concept, ensure_ascii=False),
-            ))
+            variant = str(
+                concept.get(
+                    "variant",
+                    "default"
+                )
+            )
 
-            video_ids.append(str(video_id))
 
-        c.commit()
+            c.execute(
+                """
+                INSERT INTO videos(
+                    id,
+                    product_id,
+                    variant,
+                    script,
+                    status,
+                    created_at
+                )
+                VALUES(
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    'draft',
+                    now()
+                )
+                """,
+                (
+                    video_id,
+                    product_id,
+                    variant,
+                    json.dumps(
+                        concept,
+                        ensure_ascii=False
+                    )
+                )
+            )
+
+
+            video_ids.append(
+                str(video_id)
+            )
+
 
     return {
         "video_ids": video_ids,
-        "scripts": concepts,
+        "scripts": concepts
     }
 
+
+# ============================================================
+# VIDEOS
+# ============================================================
 
 @app.get("/videos")
 def videos():
 
     with conn() as c:
-        rows = c.execute("""
+
+        rows = c.execute(
+            """
             SELECT
                 v.id,
                 v.product_id,
@@ -340,117 +767,235 @@ def videos():
                 v.status
             FROM videos v
             JOIN products p
-                ON p.id = v.product_id
+              ON p.id = v.product_id
             ORDER BY v.created_at DESC
-        """).fetchall()
+            """
+        ).fetchall()
 
-    return [
-        {
-            "id": str(r[0]),
-            "product_id": str(r[1]),
-            "product": r[2],
-            "variant": r[3],
-            "status": r[4],
-        }
-        for r in rows
-    ]
 
+    result = []
+
+    for row in rows:
+
+        result.append(
+            {
+                "id": str(row[0]),
+                "product_id": str(row[1]),
+                "product": row[2],
+                "variant": row[3],
+                "status": row[4]
+            }
+        )
+
+    return result
+
+
+# ============================================================
+# RENDER VIDEO
+# ============================================================
 
 @app.post("/videos/{vid}/render")
-def render(vid: str):
+def render_video(
+    vid: str
+):
+
+    try:
+
+        video_id = uuid.UUID(vid)
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid video ID"
+        )
+
 
     with conn() as c:
-        row = c.execute("""
+
+        row = c.execute(
+            """
             SELECT script
             FROM videos
-            WHERE id = %s
-        """, (vid,)).fetchone()
+            WHERE id=%s
+            """,
+            (video_id,)
+        ).fetchone()
+
 
     if not row:
-        raise HTTPException(404, "Video not found")
+
+        raise HTTPException(
+            status_code=404,
+            detail="Video not found"
+        )
+
 
     script = row[0]
 
+
     try:
-        scenes = script.get("scenes", [])
+
+        scenes = script.get(
+            "scenes",
+            []
+        )
 
         duration = sum(
-            float(scene.get("seconds", 3))
+            float(
+                scene.get(
+                    "seconds",
+                    3
+                )
+            )
             for scene in scenes
         )
 
-        duration = max(5, min(60, duration))
+        duration = max(
+            5,
+            min(60, duration)
+        )
 
     except Exception:
+
         duration = 15
 
-    output = DATA / f"{vid}.mp4"
 
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=black:s=1080x1920:r=30",
-            "-t",
-            str(duration),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            str(output),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    output = DATA / (
+        f"{video_id}.mp4"
     )
 
-    with conn() as c:
-        c.execute("""
-            UPDATE videos
-            SET file_path = %s,
-                status = 'ready'
-            WHERE id = %s
-        """, (str(output), vid))
 
-        c.commit()
+    try:
+
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1080x1920:r=30",
+                "-t",
+                str(duration),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(output)
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message":
+                    "FFmpeg rendering failed",
+
+                "error":
+                    str(e)
+            }
+        )
+
+
+    with conn() as c:
+
+        c.execute(
+            """
+            UPDATE videos
+            SET
+                file_path=%s,
+                status='ready'
+            WHERE id=%s
+            """,
+            (
+                str(output),
+                video_id
+            )
+        )
+
 
     return {
         "file": str(output),
-        "status": "ready",
-        "duration": duration,
+        "status": "ready"
     }
 
 
+# ============================================================
+# QUEUE
+# ============================================================
+
 @app.post("/queue/{vid}")
-def enqueue(vid: str):
+def enqueue(
+    vid: str
+):
+
+    try:
+
+        video_id = uuid.UUID(vid)
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid video ID"
+        )
+
 
     with conn() as c:
-        exists = c.execute("""
+
+        video = c.execute(
+            """
             SELECT id
             FROM videos
-            WHERE id = %s
-        """, (vid,)).fetchone()
+            WHERE id=%s
+            """,
+            (video_id,)
+        ).fetchone()
 
-    if not exists:
-        raise HTTPException(404, "Video not found")
+
+    if not video:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Video not found"
+        )
+
 
     queue_id = uuid.uuid4()
 
-    with conn() as c:
-        c.execute("""
-            INSERT INTO queue
-            (id, video_id, status)
-            VALUES (%s, %s, 'queued')
-        """, (queue_id, vid))
 
-        c.commit()
+    with conn() as c:
+
+        c.execute(
+            """
+            INSERT INTO queue(
+                id,
+                video_id,
+                status
+            )
+            VALUES(
+                %s,
+                %s,
+                'queued'
+            )
+            """,
+            (
+                queue_id,
+                video_id
+            )
+        )
+
 
     return {
         "id": str(queue_id),
-        "status": "queued",
+        "video_id": str(video_id),
+        "status": "queued"
     }
 
 
@@ -458,7 +1003,9 @@ def enqueue(vid: str):
 def get_queue():
 
     with conn() as c:
-        rows = c.execute("""
+
+        rows = c.execute(
+            """
             SELECT
                 q.id,
                 q.video_id,
@@ -467,19 +1014,27 @@ def get_queue():
                 v.variant
             FROM queue q
             JOIN videos v
-                ON v.id = q.video_id
+              ON v.id = q.video_id
             JOIN products p
-                ON p.id = v.product_id
-            ORDER BY q.scheduled_at NULLS LAST
-        """).fetchall()
+              ON p.id = v.product_id
+            ORDER BY
+                q.scheduled_at NULLS LAST
+            """
+        ).fetchall()
 
-    return [
-        {
-            "id": str(r[0]),
-            "video_id": str(r[1]),
-            "status": r[2],
-            "product": r[3],
-            "variant": r[4],
-        }
-        for r in rows
-    ]
+
+    result = []
+
+    for row in rows:
+
+        result.append(
+            {
+                "id": str(row[0]),
+                "video_id": str(row[1]),
+                "status": row[2],
+                "product": row[3],
+                "variant": row[4]
+            }
+        )
+
+    return result
