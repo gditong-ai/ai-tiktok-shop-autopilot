@@ -1,6 +1,7 @@
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-psycopg[binary]==3.2.9
-pydantic==2.11.7
-python-multipart==0.0.20
-google-genai==1.31.0
+fastapi
+uvicorn[standard]
+psycopg[binary]
+pydantic
+python-multipart
+google-genai
+httpx
